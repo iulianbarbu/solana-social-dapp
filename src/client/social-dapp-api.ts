@@ -68,7 +68,7 @@ export async function establishConnection(): Promise<void> {
 /**
  * Establish an account to pay for everything
  */
-export async function establishPayer(): Promise<void> {
+export async function establishPayer(payerKeyPairPath: string): Promise<void> {
   let fees = 0;
   if (!payer) {
     const {feeCalculator} = await connection.getRecentBlockhash();
@@ -79,7 +79,7 @@ export async function establishPayer(): Promise<void> {
     // Calculate the cost of sending transactions
     fees += feeCalculator.lamportsPerSignature * 100; // wag
 
-    payer = await getPayer(connection, programId);
+    payer = await getPayer(payerKeyPairPath, connection, programId);
   }
 
   let lamports = await connection.getBalance(payer.publicKey);
@@ -136,8 +136,14 @@ export async function checkProgram(): Promise<void> {
 /**
  * Add friend - 0 opcode
  */
-export async function addFriend(): Promise<void> {
-  let targetPubkey = await getTarget();
+export async function addFriend(targetPubkeyStr: string): Promise<void> {
+  let targetPubkey: PublicKey;
+  if (!targetPubkeyStr) {
+    targetPubkey = await getTarget();
+  } else {
+    targetPubkey = new PublicKey(targetPubkeyStr);
+  }
+
   const targetAccountInfo = await connection.getAccountInfo(targetPubkey);
   if (targetAccountInfo === null) {
     throw 'Error: cannot find the target user account. Please make sure you want to add as a friend an existing user.';
@@ -161,6 +167,84 @@ export async function addFriend(): Promise<void> {
       {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
       {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
       {pubkey: targetPubkey, isSigner: false, isWritable: false}],
+    programId,
+    data,
+  });
+
+  await sendAndConfirmTransaction(
+    connection,
+    new Transaction().add(instruction),
+    [payer],
+  );
+}
+
+/**
+ * Remove friend - 1 opcode
+ */
+ export async function removeFriend(targetPubkeyStr: string): Promise<void> {
+  let targetPubkey: PublicKey;
+  if (!targetPubkeyStr) {
+    targetPubkey = await getTarget();
+  } else {
+    targetPubkey = new PublicKey(targetPubkeyStr);
+  }
+
+  const targetAccountInfo = await connection.getAccountInfo(targetPubkey);
+  if (targetAccountInfo === null) {
+    throw 'Error: cannot find the target user account. Please make sure you want to add as a friend an existing user.';
+  }
+
+  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
+  let payerUserStatePubkey = await PublicKey.createWithSeed(
+    payer.publicKey,
+    SOCIAL_DAPP_SEED,
+    programId,
+  );
+  
+  console.log('Remove request initiated by ', payer.publicKey.toBase58(), ' for target ', targetPubkey.toBase58());
+  
+  // Initialize the operation.
+  let data = Buffer.alloc(1);
+  data[0] = 1;
+
+  const instruction = new TransactionInstruction({
+    keys: [
+      {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
+      {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
+      {pubkey: targetPubkey, isSigner: false, isWritable: false}],
+    programId,
+    data,
+  });
+
+  await sendAndConfirmTransaction(
+    connection,
+    new Transaction().add(instruction),
+    [payer],
+  );
+}
+
+/**
+ * Remove friend - 2 & 3 opcodes
+ */
+ export async function setStatus(online: boolean): Promise<void> {
+  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
+  let payerUserStatePubkey = await PublicKey.createWithSeed(
+    payer.publicKey,
+    SOCIAL_DAPP_SEED,
+    programId,
+  );
+  
+  console.log('Set status request initiated by ', payer.publicKey.toBase58());
+  
+  // Initialize the operation.
+  let data = Buffer.alloc(1);
+  data[0] = online ? 2 : 3;
+
+  const instruction = new TransactionInstruction({
+    keys: [
+      {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
+      {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
+    ],
     programId,
     data,
   });

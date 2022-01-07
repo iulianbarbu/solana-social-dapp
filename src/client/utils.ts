@@ -56,11 +56,16 @@ export async function getRpcUrl(): Promise<string> {
 /**
  * Load and parse the Solana CLI config file to determine which payer to use
  */
-export async function getPayer(connection: Connection, programId: PublicKey): Promise<Keypair> {
+export async function getPayer(payerKeyPairPath: string, connection: Connection, programId: PublicKey): Promise<Keypair> {
   try {
-    const config = await getConfig();
-    if (!config.keypair_path) throw new Error('Missing keypair path');
-    let key_pair = await createKeypairFromFile(config.keypair_path);
+    let key_pair_path = payerKeyPairPath;
+    if (!key_pair_path) {
+      const config = await getConfig();
+      key_pair_path = config.keypair_path;
+    }
+    
+    if (!key_pair_path) throw new Error('Missing keypair path');
+    let key_pair = await createKeypairFromFile(key_pair_path);
     
     {
       // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
