@@ -7,6 +7,7 @@ import fs from 'mz/fs';
 import path from 'path';
 import yaml from 'yaml';
 import {Connection, Keypair, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction} from '@solana/web3.js';
+import * as borsh from 'borsh';
 
 
 /**
@@ -19,6 +20,27 @@ export const USER_STATE_SIZE = 1000000;
  * Hardcoded value for a seeded needed by the SystemProgram to create custom accounts.
  */
 export const SOCIAL_DAPP_SEED = 'INITIALIZE_STATE';
+
+/**
+ * The state of a greeting account managed by the hello world program
+*/
+export class UserState {
+  online = 0;
+  friends = new Map();
+  constructor(fields: {online: number, friends: Map<string, string>} | undefined = undefined) {
+    if (fields) {
+      this.online = fields.online;
+      this.friends = fields.friends;
+    }
+  }
+}
+
+/**
+ * Borsh schema definition for greeting accounts
+ */
+export const UserStateSchema = new Map([
+  [UserState, {kind: 'struct', fields: [['online', 'u8'], ['friends', {kind: 'map', key: 'string', value: 'string'}]]}],
+]);
 
 
 /**
@@ -53,70 +75,106 @@ export async function getRpcUrl(): Promise<string> {
   }
 }
 
-/**
- * Load and parse the Solana CLI config file to determine which payer to use
- */
-export async function getPayer(payerKeyPairPath: string, connection: Connection, programId: PublicKey): Promise<Keypair> {
-  try {
-    let key_pair_path = payerKeyPairPath;
-    if (!key_pair_path) {
-      const config = await getConfig();
-      key_pair_path = config.keypair_path;
-    }
-    
-    if (!key_pair_path) throw new Error('Missing keypair path');
-    let key_pair = await createKeypairFromFile(key_pair_path);
-    
-    {
-      // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
-      let payerUserStatePubkey = await PublicKey.createWithSeed(
-        key_pair.publicKey,
-        SOCIAL_DAPP_SEED,
-        programId,
-      );
-
-      // Check if the greeting account has already been created
-      const payerUserStateAccount = await connection.getAccountInfo(payerUserStatePubkey);
-      if (payerUserStateAccount === null) {
-        console.log(
-          'Creating user state account',
-          payerUserStatePubkey.toBase58(),
-          'for payer.',
-        );
-        const lamports = await connection.getMinimumBalanceForRentExemption(
-          USER_STATE_SIZE,
-        );
-
-        const transaction = new Transaction().add(
-          SystemProgram.createAccountWithSeed({
-            fromPubkey: key_pair.publicKey,
-            basePubkey: key_pair.publicKey,
-            seed: SOCIAL_DAPP_SEED,
-            newAccountPubkey: payerUserStatePubkey,
-            lamports,
-            space: USER_STATE_SIZE,
-            programId,
-          }),
-        );
-        await sendAndConfirmTransaction(connection, transaction, [key_pair]);
-      }
-    }
-    return key_pair;
-  } catch (err) {
-    console.warn(
-      'Failed to create keypair from CLI config file, falling back to new random keypair',
-    );
-    return Keypair.generate();
+export async function retrieveUserState(connection: Connection, pubkey: PublicKey): Promise<UserState> {
+  let userStateAcc = await connection.getAccountInfo(pubkey);
+  if (!userStateAcc) {
+    return new UserState();
   }
+
+  let dataview = new DataView(userStateAcc.data.slice(0, 4).buffer);
+  let userStateLen = dataview.getInt32(0, true);
+  // Requirement for having an empty serialized `UserState` object.
+  if (userStateLen >= 5) {
+    return borsh.deserialize(UserStateSchema, UserState, userStateAcc.data.slice(4, 4 + userStateLen));
+  }
+  
+  return new UserState();
+}
+
+export async function retrievePayerUserState(connection: Connection, keypair: Keypair, programId: PublicKey): Promise<UserState> {
+  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
+  let payerUserStatePubkey = await PublicKey.createWithSeed(
+    keypair.publicKey,
+    SOCIAL_DAPP_SEED,
+    programId,
+  );
+  return await retrieveUserState(connection, payerUserStatePubkey);
+}
+
+export async function createUserState(connection: Connection, keypair: Keypair, programId: PublicKey): Promise<PublicKey> {
+  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
+  let userStatePubkey = await PublicKey.createWithSeed(
+    keypair.publicKey,
+    SOCIAL_DAPP_SEED,
+    programId,
+  );
+
+  // Check if the greeting account has already been created
+  const payerUserStateAccount = await connection.getAccountInfo(userStatePubkey);
+  if (payerUserStateAccount === null) {
+    console.log(
+      'Creating user state account',
+      userStatePubkey.toBase58(),
+      'for ', keypair.publicKey.toBase58() + "."
+    );
+  
+
+    const {feeCalculator} = await connection.getRecentBlockhash();
+    
+    let fees = 0;
+    // Calculate the cost to fund the greeter account
+    fees = await connection.getMinimumBalanceForRentExemption(USER_STATE_SIZE);
+
+    // Calculate the cost of sending transactions
+    fees += feeCalculator.lamportsPerSignature * 100; // wag
+
+    let lamports = await connection.getBalance(keypair.publicKey);
+    if (lamports < fees) {
+      // If current balance is not enough to pay for fees, request an airdrop
+      const sig = await connection.requestAirdrop(
+        keypair.publicKey,
+        fees - lamports,
+      );
+      await connection.confirmTransaction(sig);
+      lamports = await connection.getBalance(keypair.publicKey);
+    }
+
+    lamports = await connection.getMinimumBalanceForRentExemption(
+      USER_STATE_SIZE,
+    );
+
+    const transaction = new Transaction().add(
+      SystemProgram.createAccountWithSeed({
+        fromPubkey: keypair.publicKey,
+        basePubkey: keypair.publicKey,
+        seed: SOCIAL_DAPP_SEED,
+        newAccountPubkey: userStatePubkey,
+        lamports,
+        space: USER_STATE_SIZE,
+        programId,
+      }),
+    );
+
+    await sendAndConfirmTransaction(connection, transaction, [keypair]);
+  }
+  
+  return userStatePubkey;
 }
 
 /**
- * Load and parse the Solana CLI config file to determine who is the target of the payer
+ * Load and parse the Solana CLI config file to determine which payer to use
  */
- export async function getTarget(): Promise<PublicKey> {
+export async function getPayer(connection: Connection, programId: PublicKey): Promise<Keypair> {
+  try {
     const config = await getConfig();
-    if (!config.social_dapp_target || config.social_dapp_target == "") throw new Error('Missing social dapp target');
-    return new PublicKey(config.social_dapp_target);
+    let keypair_path = config.keypair_path;
+    if (!keypair_path) throw new Error('Missing keypair from ' +  keypair_path + '.');
+    let keypair = await createKeypairFromFile(keypair_path);
+    await createUserState(connection, keypair, programId);
+    return keypair;
+  } catch (_) {
+    throw new Error('Failed to create keypair from CLI config file.');
+  }
 }
 
 /**

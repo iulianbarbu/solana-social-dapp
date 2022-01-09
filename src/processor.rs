@@ -32,8 +32,7 @@ impl Processor {
 
         // 0 - add friend
         // 1 - remove friend
-        // 2 - set online true
-        // 4 - get online friends (TODO)
+        // 2 & 3- set online true/false
         match instruction_data[0] {
             0 => {
                 let target = next_account_info(account_info_iter)?;
@@ -127,17 +126,6 @@ impl Processor {
                     Ok(())
                 }
             },
-            4 => {
-                let bytes_to_be_read = u32::try_from_slice(&initializer_user_state_data[..4])?;
-                let mut _initializer_user_state = match UserState::try_from_slice(&initializer_user_state_data[4 as usize..(4 + bytes_to_be_read as usize)]) {
-                    Ok(user_state) => user_state,
-                    Err(_) => {
-                        UserState::default()
-                    }
-                };
-                // TODO
-                Ok(())
-            }
             _ =>  {
                 msg!("instruction_data[0]: {}", instruction_data[0]);
                 Err(ProgramError::Custom(instruction_data[0] as u32))

@@ -6,16 +6,16 @@ import {
   Connection,
   PublicKey,
   LAMPORTS_PER_SOL,
-  SystemProgram,
   TransactionInstruction,
   Transaction,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import fs from 'mz/fs';
 import path from 'path';
-// import * as borsh from 'borsh';
+import * as borsh from 'borsh';
 
-import {SOCIAL_DAPP_SEED, USER_STATE_SIZE, getPayer, getRpcUrl, createKeypairFromFile, getTarget} from './utils';
+import {SOCIAL_DAPP_SEED, USER_STATE_SIZE, getPayer, getRpcUrl, createKeypairFromFile, retrieveUserState, UserStateSchema, UserState, retrievePayerUserState, createUserState} from './utils';
+import { parseSync } from 'yargs';
 
 /**
  * Connection to the network
@@ -31,11 +31,6 @@ let payer: Keypair;
  * Hello world's program id
  */
 let programId: PublicKey;
-
-/**
- * The public key of the account that is target by an initialiser within the social dapp.
- */
- let targetPubkey: PublicKey;
 
 /**
  * Path to program files
@@ -66,39 +61,25 @@ export async function establishConnection(): Promise<void> {
 }
 
 /**
- * Establish an account to pay for everything
+ * Establish an account to pay for everything.
  */
-export async function establishPayer(payerKeyPairPath: string): Promise<void> {
-  let fees = 0;
+export async function establishPayer(payer_keypair_path?: string): Promise<void> {
+  if (payer_keypair_path) {
+    payer = await createKeypairFromFile(payer_keypair_path);
+    await createUserState(connection, payer, programId);
+  }
+  
   if (!payer) {
-    const {feeCalculator} = await connection.getRecentBlockhash();
-
-    // Calculate the cost to fund the greeter account
-    // fees += await connection.getMinimumBalanceForRentExemption(USER_ACCOUNT_SIZE);
-
-    // Calculate the cost of sending transactions
-    fees += feeCalculator.lamportsPerSignature * 100; // wag
-
-    payer = await getPayer(payerKeyPairPath, connection, programId);
+    payer = await getPayer(connection, programId);
   }
 
-  let lamports = await connection.getBalance(payer.publicKey);
-  if (lamports < fees) {
-    // If current balance is not enough to pay for fees, request an airdrop
-    const sig = await connection.requestAirdrop(
-      payer.publicKey,
-      fees - lamports,
-    );
-    await connection.confirmTransaction(sig);
-    lamports = await connection.getBalance(payer.publicKey);
-  }
-
+  const lamports = await connection.getBalance(payer.publicKey);
   console.log(
     'Using account',
     payer.publicKey.toBase58(),
     'containing',
     lamports / LAMPORTS_PER_SOL,
-    'SOL to pay for fees',
+    'SOL to pay for fees.',
   );
 }
 
@@ -130,35 +111,27 @@ export async function checkProgram(): Promise<void> {
   } else if (!programInfo.executable) {
     throw new Error(`Program is not executable`);
   }
-  console.log(`Using program ${programId.toBase58()}`);
+  console.log(`Using program ${programId.toBase58()}.`);
 }
 
 /**
- * Add friend - 0 opcode
+ * Add friend - 0 opcode.
  */
 export async function addFriend(targetPubkeyStr: string): Promise<void> {
-  let targetPubkey: PublicKey;
-  if (!targetPubkeyStr) {
-    targetPubkey = await getTarget();
-  } else {
-    targetPubkey = new PublicKey(targetPubkeyStr);
-  }
-
+  let targetPubkey = new PublicKey(targetPubkeyStr);
   const targetAccountInfo = await connection.getAccountInfo(targetPubkey);
   if (targetAccountInfo === null) {
-    throw 'Error: cannot find the target user account. Please make sure you want to add as a friend an existing user.';
+    throw new Error('[' + payer.publicKey + '] Can not find the target user account: ' 
+    + targetPubkeyStr 
+    + '. Please make sure you want to add an existing user as a friend.');
   }
 
-  // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
   let payerUserStatePubkey = await PublicKey.createWithSeed(
     payer.publicKey,
     SOCIAL_DAPP_SEED,
     programId,
   );
   
-  console.log('Follow request initiated by ', payer.publicKey.toBase58(), ' to target ', targetPubkey.toBase58());
-  
-  // Initialize the operation.
   let data = Buffer.alloc(1);
   data[0] = 0;
 
@@ -171,27 +144,34 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     data,
   });
 
-  await sendAndConfirmTransaction(
-    connection,
-    new Transaction().add(instruction),
-    [payer],
-  );
+  let payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (payerUserState && !payerUserState.friends.has(targetPubkeyStr)) {
+    await sendAndConfirmTransaction(
+      connection,
+      new Transaction().add(instruction),
+      [payer],
+    );
+    console.log('[' + payer.publicKey + '] Added ' + targetPubkeyStr + ' to the friends list.');
+  } else if(payerUserState) {
+    console.log('[' + payer.publicKey + '] ' + targetPubkeyStr + ' already added to the friends list.');
+  } else {
+    throw new Error('[' + payer.publicKey + '] Failed to add ' + targetPubkeyStr + ' to the friends list.');
+  }
+
+  payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (!payerUserState || !payerUserState.friends.has(targetPubkeyStr)) {
+    throw new Error('[' + payer.publicKey + '] Failed to add ' + targetPubkeyStr + ' to the friends list.');
+  }
 }
 
 /**
- * Remove friend - 1 opcode
+ * Remove friend - 1 opcode.
  */
  export async function removeFriend(targetPubkeyStr: string): Promise<void> {
-  let targetPubkey: PublicKey;
-  if (!targetPubkeyStr) {
-    targetPubkey = await getTarget();
-  } else {
-    targetPubkey = new PublicKey(targetPubkeyStr);
-  }
-
+  let targetPubkey = new PublicKey(targetPubkeyStr);
   const targetAccountInfo = await connection.getAccountInfo(targetPubkey);
   if (targetAccountInfo === null) {
-    throw 'Error: cannot find the target user account. Please make sure you want to add as a friend an existing user.';
+    throw new Error('[' + payer.publicKey + '] Can not find the target user account. Please make sure you want to remove an existing friend.');
   }
 
   // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
@@ -200,8 +180,6 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     SOCIAL_DAPP_SEED,
     programId,
   );
-  
-  console.log('Remove request initiated by ', payer.publicKey.toBase58(), ' for target ', targetPubkey.toBase58());
   
   // Initialize the operation.
   let data = Buffer.alloc(1);
@@ -216,15 +194,28 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     data,
   });
 
-  await sendAndConfirmTransaction(
-    connection,
-    new Transaction().add(instruction),
-    [payer],
-  );
+  let payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (payerUserState && payerUserState.friends.has(targetPubkeyStr)) {
+    await sendAndConfirmTransaction(
+      connection,
+      new Transaction().add(instruction),
+      [payer],
+    );
+    console.log('[' + payer.publicKey + '] Removed ' + targetPubkeyStr + ' from the friends list.');
+  } else if(payerUserState) {
+    console.log('[' + payer.publicKey + '] ' + targetPubkeyStr + ' is not part of the friends list.');
+  } else {
+    throw new Error('[' + payer.publicKey + '] Failed to remove ' + targetPubkeyStr + ' from the friends list.');
+  }
+
+  payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (!payerUserState || payerUserState.friends.has(targetPubkeyStr)) {
+    throw new Error('[' + payer.publicKey + '] Failed to remove ' + targetPubkeyStr + ' from the friends list.');
+  }
 }
 
 /**
- * Remove friend - 2 & 3 opcodes
+ * Set status - 2 & 3 opcodes.
  */
  export async function setStatus(online: boolean): Promise<void> {
   // Derive the address (public key) of a greeting account from the program so that it's easy to find later.
@@ -233,8 +224,6 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     SOCIAL_DAPP_SEED,
     programId,
   );
-  
-  console.log('Set status request initiated by ', payer.publicKey.toBase58());
   
   // Initialize the operation.
   let data = Buffer.alloc(1);
@@ -254,4 +243,38 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     new Transaction().add(instruction),
     [payer],
   );
+
+  let payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (payerUserState && (payerUserState.online == 0 ? false : true) == online) {
+    console.log('[' + payer.publicKey + '] Status set to ' + online + '.');
+  } else {
+    throw new Error('[' + payer.publicKey + '] Failed to set status to ' + online + '.');
+  }
+}
+
+/**
+ * Get online friends.
+ * This operation reads through the existing accounts on the blockchain, hence, it does not interact with the
+ * deployed social dapp smart contract.
+ */
+ export async function getOnlineFriends(): Promise<void> {
+  let payerUserState = await retrievePayerUserState(connection, payer, programId);
+  let onlineFriends = [];
+  for (const friend of payerUserState.friends.keys()) {
+    let friendUserStatePubkey = await PublicKey.createWithSeed(
+      new PublicKey(friend),
+      SOCIAL_DAPP_SEED,
+      programId
+    );
+    let friendUserState = await retrieveUserState(connection, friendUserStatePubkey);
+    if (friendUserState && friendUserState.online) {
+      onlineFriends.push(friend);
+    }
+  }
+
+  if (onlineFriends.length > 0) {
+    console.log("[" + payer.publicKey.toBase58() + "] Online friends: ", onlineFriends + ".");
+  } else {
+    console.log("[" + payer.publicKey.toBase58() + "] All friends are offline.");
+  }
 }
