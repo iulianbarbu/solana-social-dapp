@@ -132,20 +132,19 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     programId,
   );
   
-  let data = Buffer.alloc(1);
-  data[0] = 0;
-
-  const instruction = new TransactionInstruction({
-    keys: [
-      {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
-      {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
-      {pubkey: targetPubkey, isSigner: false, isWritable: false}],
-    programId,
-    data,
-  });
-
   let payerUserState = await retrievePayerUserState(connection, payer, programId);
   if (payerUserState && !payerUserState.friends.has(targetPubkeyStr)) {
+    let data = Buffer.alloc(1);
+    data[0] = 0;
+
+    const instruction = new TransactionInstruction({
+      keys: [
+        {pubkey: payer.publicKey, isSigner: true, isWritable: false},
+        {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true},
+        {pubkey: targetPubkey, isSigner: false, isWritable: false}],
+      programId,
+      data,
+    });
     await sendAndConfirmTransaction(
       connection,
       new Transaction().add(instruction),
@@ -180,22 +179,21 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     SOCIAL_DAPP_SEED,
     programId,
   );
-  
-  // Initialize the operation.
-  let data = Buffer.alloc(1);
-  data[0] = 1;
-
-  const instruction = new TransactionInstruction({
-    keys: [
-      {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
-      {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
-      {pubkey: targetPubkey, isSigner: false, isWritable: false}],
-    programId,
-    data,
-  });
 
   let payerUserState = await retrievePayerUserState(connection, payer, programId);
   if (payerUserState && payerUserState.friends.has(targetPubkeyStr)) {
+    // Initialize the operation.
+    let data = Buffer.alloc(1);
+    data[0] = 1;
+
+    const instruction = new TransactionInstruction({
+      keys: [
+        {pubkey: payer.publicKey, isSigner: true, isWritable: false},
+        {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true},
+        {pubkey: targetPubkey, isSigner: false, isWritable: false}],
+      programId,
+      data,
+    });
     await sendAndConfirmTransaction(
       connection,
       new Transaction().add(instruction),
@@ -224,31 +222,35 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
     SOCIAL_DAPP_SEED,
     programId,
   );
-  
-  // Initialize the operation.
-  let data = Buffer.alloc(1);
-  data[0] = online ? 2 : 3;
-
-  const instruction = new TransactionInstruction({
-    keys: [
-      {pubkey: payer.publicKey, isSigner: true, isWritable: false}, 
-      {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true}, 
-    ],
-    programId,
-    data,
-  });
-
-  await sendAndConfirmTransaction(
-    connection,
-    new Transaction().add(instruction),
-    [payer],
-  );
 
   let payerUserState = await retrievePayerUserState(connection, payer, programId);
-  if (payerUserState && (payerUserState.online == 0 ? false : true) == online) {
-    console.log('[' + payer.publicKey + '] Status set to ' + online + '.');
+  if (payerUserState && (online != (payerUserState.online  == 1 ? true : false))) {
+    // Initialize the operation.
+    let data = Buffer.alloc(1);
+    data[0] = online ? 2 : 3
+    const instruction = new TransactionInstruction({
+      keys: [
+        {pubkey: payer.publicKey, isSigner: true, isWritable: false},
+        {pubkey: payerUserStatePubkey, isSigner: false, isWritable: true},
+      ],
+      programId,
+      data,
+    });
+    await sendAndConfirmTransaction(
+      connection,
+      new Transaction().add(instruction),
+      [payer],
+    );
+    console.log('[' + payer.publicKey + '] Status set to ' + (online ? 'online' : 'offline') + '.');
+  } else if (payerUserState) {
+    console.log('[' + payer.publicKey + '] Status is already set to ' + (online ? 'online' : 'offline') + '.');
   } else {
-    throw new Error('[' + payer.publicKey + '] Failed to set status to ' + online + '.');
+    throw new Error('[' + payer.publicKey + '] Failed to set status to ' + (online ? 'online' : 'offline') + '.');
+  }
+
+  payerUserState = await retrievePayerUserState(connection, payer, programId);
+  if (!payerUserState || (online != (payerUserState.online == 1 ? true : false))) {
+    throw new Error('[' + payer.publicKey + '] Failed to set status to ' + (online ? 'online' : 'offline') + '.');
   }
 }
 
@@ -273,7 +275,7 @@ export async function addFriend(targetPubkeyStr: string): Promise<void> {
   }
 
   if (onlineFriends.length > 0) {
-    console.log("[" + payer.publicKey.toBase58() + "] Online friends: ", onlineFriends + ".");
+    console.log("[" + payer.publicKey.toBase58() + "] Online friends:", onlineFriends + ".");
   } else {
     console.log("[" + payer.publicKey.toBase58() + "] All friends are offline.");
   }
